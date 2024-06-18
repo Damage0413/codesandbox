@@ -17,12 +17,24 @@ import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.io.resource.ResourceUtil;
 import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.dfa.FoundWord;
+import cn.hutool.dfa.WordTree;
 
 public class JavaNativeCodeSandbox implements CodeSandbox {
 
     private static final String GLOBAL_CODE_DIR_NAME = "tmpCode";
 
     private static final String GLOBAL_JAVA_CLASS_NAME = "Main.java";
+
+    private static final List<String> blackList = Arrays.asList("Files", "exec");
+
+    private static final WordTree WORD_TREE;
+
+    static {
+        // 初始化字典树
+        WORD_TREE = new WordTree();
+        WORD_TREE.addWords(blackList);
+    }
 
     public static void main(String[] args) {
         JavaNativeCodeSandbox javaNativeCodeSandbox = new JavaNativeCodeSandbox();
@@ -40,6 +52,14 @@ public class JavaNativeCodeSandbox implements CodeSandbox {
         List<String> inputList = executeCodeRequest.getInputList();
         String code = executeCodeRequest.getCode();
         String language = executeCodeRequest.getLanguage();
+
+        // 使用字典树查看用户提交的代码中是否有禁止的操作（如：执行新命令，删除文件等）
+        FoundWord foundWord = WORD_TREE.matchWord(code);
+        if (foundWord != null) {
+            System.out.println("包含禁止词：" + foundWord.getFoundWord());
+            return null;
+        }
+
         // 1）将用户提交的代码保存为文件
         String userDir = System.getProperty("user.dir");
         String globalCodePathName = userDir + File.separator + GLOBAL_CODE_DIR_NAME;
@@ -66,10 +86,22 @@ public class JavaNativeCodeSandbox implements CodeSandbox {
         // 3）执行代码，得到输出结果
         List<ExecuteMessage> executeMessageList = new ArrayList<>();
         for (String inputArgs : inputList) {
-            String runCmd = String.format("java -cp %s Main %s", userCodeParentPath,
+            // 使用Xmax限制java进程的JVM最大堆空间
+            // 还可以使用安全管理器进行用户权限限制，但是java17以弃用，故不再使用
+            String runCmd = String.format("java -Xmx256m -cp %s Main %s", userCodeParentPath,
                     inputArgs);
             try {
                 Process runProcess = Runtime.getRuntime().exec(runCmd);
+                // 超时控制，另起一个进程，使用该进程控制原进程的最大运行时间
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(5000l);
+                        System.out.println("超时了");
+                        runProcess.destroy();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
                 ExecuteMessage runProcessAndGetMessage = ProcessUtils.runProcessAndGetMessage(runProcess, "运行");
                 executeMessageList.add(runProcessAndGetMessage);
                 System.out.println(runProcessAndGetMessage);
