@@ -1,7 +1,6 @@
 package com.oj.codesandbox;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,7 +30,6 @@ import com.oj.codesandbox.model.ExecuteCodeRequest;
 import com.oj.codesandbox.model.ExecuteCodeResponse;
 import com.oj.codesandbox.model.ExecuteMessage;
 import com.oj.codesandbox.model.JudgeInfo;
-import com.oj.codesandbox.utils.ProcessUtils;
 
 import cn.hutool.core.date.StopWatch;
 import cn.hutool.core.io.FileUtil;
@@ -39,37 +37,185 @@ import cn.hutool.core.io.resource.ResourceUtil;
 import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.ArrayUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.dfa.FoundWord;
+import cn.hutool.dfa.WordTree;
 
 @Component
-public class JavaDockerCodeSandbox implements CodeSandbox {
-
+@SuppressWarnings("deprecation")
+public class PythonDockerCodeSandbox implements CodeSandbox {
     private static final String GLOBAL_CODE_DIR_NAME = "tmpCode";
 
-    private static final String GLOBAL_JAVA_CLASS_NAME = "Main.java";
+    private static final String GLOBAL_PYTHON_NAME = "Main.py";
 
     private static final long TIME_OUT = 5L;
 
     private static final Boolean FIRST_INIT = true;
 
+    private static final List<String> blackList = Arrays.asList(
+            // 文件操作相关
+            "open", "os.system", "os.popen", "os.fdopen", "shutil.copy", "shutil.move", "shutil.rmtree",
+
+            // 网络相关
+            "socket", "http.client.HTTPConnection", "http.client.HTTPSConnection", "urllib.request.urlopen",
+            "urllib.request.urlretrieve",
+
+            // 系统命令执行相关
+            "subprocess.run", "subprocess.Popen",
+
+            // 反射相关
+            "__import__", "eval", "exec",
+
+            // 数据库相关
+            "sqlite3", "MySQLdb",
+
+            // 加密解密相关
+            "cryptography",
+
+            // 序列化相关
+            "pickle",
+
+            // 线程相关
+            "threading.Thread", "multiprocessing.Process",
+
+            // 安全管理器相关
+            "java.lang.SecurityManager",
+
+            // 其他可能导致安全问题的操作
+            "ctypes.CDLL", "ctypes.WinDLL", "ctypes.CFUNCTYPE", "os.environ", "os.putenv", "atexit.register",
+
+            // 与操作系统交互
+            "os.chmod", "os.chown",
+
+            // 文件权限控制
+            "os.access", "os.setuid", "os.setgid",
+
+            // 环境变量操作
+            "os.environ['SOME_VAR']", "os.putenv('SOME_VAR', 'value')",
+
+            // 不安全的输入
+            "input", "raw_input",
+
+            // 不安全的字符串拼接
+            "eval(f'expr {var}')", "var = var1 + var2",
+
+            // 定时器相关
+            "time.sleep",
+
+            // 定时任务
+            "schedule",
+
+            // 本地文件包含
+            "exec(open('filename').read())",
+
+            // 不安全的网站访问
+            "urllib.urlopen",
+
+            // 系统退出
+            "exit",
+
+            // 其他危险操作
+            "os.remove", "os.unlink", "os.rmdir", "os.removedirs", "os.rename", "os.execvp", "os.execlp",
+
+            // 不安全的随机数生成
+            "random",
+
+            // 不安全的正则表达式
+            "re.compile",
+
+            // 使用 eval 解析 JSON
+            "eval(json_string)",
+
+            // 使用 pickle 处理不受信任的数据
+            "pickle.loads",
+
+            // 使用 exec 执行不受信任的代码
+            "exec(code)",
+
+            // 不安全的 HTML 解析
+            "BeautifulSoup",
+
+            // 不安全的 XML 解析
+            "xml.etree.ElementTree",
+
+            // 使用自定义反序列化
+            "pickle.Unpickler", "marshal.loads",
+
+            // 在代码中直接拼接 SQL
+            "sqlalchemy.text",
+
+            // 不安全的图像处理
+            "PIL.Image",
+
+            // 使用 ctypes 执行外部 C 代码
+            "ctypes.CDLL",
+
+            // 不安全的邮件操作
+            "smtplib", "poplib",
+
+            // 不安全的 URL 拼接
+            "urllib.parse.urljoin",
+
+            // 使用 eval 执行 JavaScript 代码
+            "execjs.eval",
+
+            // 不安全的 Web 框架设置
+            "Flask.app.secret_key",
+
+            // 不安全的 API 请求
+            "requests.get", "requests.post",
+
+            // 不安全的模板引擎
+            "Jinja2.Template",
+
+            // 不安全的数据反序列化
+            "pickle.loads", "marshal.loads",
+
+            // 不安全的文件上传
+            "werkzeug.FileStorage",
+
+            // 不安全的命令行参数解析
+            "argparse.ArgumentParser");
+
+    /**
+     * 代码黑名单字典树
+     */
+    private static final WordTree WORD_TREE;
+
+    static {
+        // 初始化黑名单字典树
+        WORD_TREE = new WordTree();
+        WORD_TREE.addWords(blackList);
+    }
+
     // public static void main(String[] args) {
-    // JavaDockerCodeSandbox javaNativeCodeSandbox = new JavaDockerCodeSandbox();
+    // PythonDockerCodeSandbox pythonDockerCodeSandbox = new
+    // PythonDockerCodeSandbox();
     // ExecuteCodeRequest executeCodeRequest = new ExecuteCodeRequest();
     // executeCodeRequest.setInputList(Arrays.asList("1 2", "1 3"));
-    // String code = ResourceUtil.readStr("testCode/simpleComputeArgs/Main.java",
+    // String code = ResourceUtil.readStr("testCode/simpleComputeArgs/Main.py",
     // StandardCharsets.UTF_8);
     // executeCodeRequest.setCode(code);
-    // executeCodeRequest.setLanguage("java");
+    // executeCodeRequest.setLanguage("python");
     // ExecuteCodeResponse executeCodeResponse =
-    // javaNativeCodeSandbox.executeCode(executeCodeRequest);
-    // System.out.println("代码沙箱结果：" + executeCodeResponse);
+    // pythonDockerCodeSandbox.executeCode(executeCodeRequest);
+    // System.out.println(executeCodeResponse);
     // }
 
-    @SuppressWarnings("deprecation")
     @Override
     public ExecuteCodeResponse executeCode(ExecuteCodeRequest executeCodeRequest) {
+
         List<String> inputList = executeCodeRequest.getInputList();
         String code = executeCodeRequest.getCode();
-        String language = executeCodeRequest.getLanguage();
+
+        // 使用字典树筛查提交代码
+        FoundWord foundWord = WORD_TREE.matchWord(code);
+        if (foundWord != null) {
+            System.out.println("包含禁止词：" + foundWord.getFoundWord());
+            // 返回错误信息
+            return new ExecuteCodeResponse(null, "包含禁止词：" + foundWord.getFoundWord(),
+                    3,
+                    new JudgeInfo("包含禁止词：" + foundWord.getFoundWord(), 0l, 0l));
+        }
 
         // 1）将用户提交的代码保存为文件
         String userDir = System.getProperty("user.dir");
@@ -81,24 +227,14 @@ public class JavaDockerCodeSandbox implements CodeSandbox {
 
         // 把用户的代码隔离存放
         String userCodeParentPath = globalCodePathName + File.separator + UUID.randomUUID();
-        String userCodePath = userCodeParentPath + File.separator + GLOBAL_JAVA_CLASS_NAME;
+        String userCodePath = userCodeParentPath + File.separator + GLOBAL_PYTHON_NAME;
         File userCodeFile = FileUtil.writeString(code, userCodePath, StandardCharsets.UTF_8);
 
-        // 2）编译java文件得到class文件
-        String compileCmd = String.format("javac -encoding utf-8 %s", userCodeFile.getAbsolutePath());
-        try {
-            Process compileProcess = Runtime.getRuntime().exec(compileCmd);
-            ExecuteMessage runProcessAndGetMessage = ProcessUtils.runProcessAndGetMessage(compileProcess, "编译");
-            System.out.println(runProcessAndGetMessage);
-        } catch (IOException e) {
-            return getErrorResponse(e);
-        }
-
-        // 3）创建Docker容器
+        // 2）不用编译，直接创建Docker容器
         DockerClient dockerClient = DockerClientBuilder.getInstance().build();
 
         // 拉取镜像
-        String image = "openjdk:17-jdk-alpine";
+        String image = "python:3.8-alpine";
         if (FIRST_INIT) {
             PullImageCmd pullImageCmd = dockerClient.pullImageCmd(image);
             PullImageResultCallback pullImageResultCallback = new PullImageResultCallback() {
@@ -147,12 +283,12 @@ public class JavaDockerCodeSandbox implements CodeSandbox {
         // 启动容器
         dockerClient.startContainerCmd(containerId).exec();
 
-        // docker exec keen_blackwell java -cp /app Main 1 3
+        // docker exec keen_blackwell python /app/Main.py 1 2
         List<ExecuteMessage> executeMessages = new ArrayList<>();
         for (String inputArgs : inputList) {
             StopWatch stopWatch = new StopWatch();
             String[] inputArgsArray = inputArgs.split(" ");
-            String[] cmdArray = ArrayUtil.append(new String[] { "java", "-cp", "/app", "Main" }, inputArgsArray);
+            String[] cmdArray = ArrayUtil.append(new String[] { "python3", "/app/Main.py" }, inputArgsArray);
             System.out.println("指令：" + cmdArray);
             // 向容器输入指令
             ExecCreateCmdResponse execCreateCmdResponse = dockerClient.execCreateCmd(containerId)
@@ -223,10 +359,10 @@ public class JavaDockerCodeSandbox implements CodeSandbox {
             executeMessage.setTime(time);
             executeMessage.setMessage(message[0]);
             executeMessage.setErrorMessage(errorMessage[0]);
+            System.out.println("内存为：" + maxMemory[0]);
             executeMessage.setMemory(maxMemory[0]);
             executeMessages.add(executeMessage);
         }
-
         // 4、封装结果，跟原生实现方式完全一致
         ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
         List<String> outputList = new ArrayList<>();
@@ -270,19 +406,4 @@ public class JavaDockerCodeSandbox implements CodeSandbox {
         return executeCodeResponse;
     }
 
-    /**
-     * 获取错误响应
-     *
-     * @param e
-     * @return
-     */
-    private ExecuteCodeResponse getErrorResponse(Throwable e) {
-        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
-        executeCodeResponse.setOutputList(new ArrayList<>());
-        executeCodeResponse.setMessage(e.getMessage());
-        // 表示代码沙箱错误
-        executeCodeResponse.setStatus(2);
-        executeCodeResponse.setJudgeInfo(new JudgeInfo());
-        return executeCodeResponse;
-    }
 }
